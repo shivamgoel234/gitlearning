@@ -1,0 +1,6 @@
+# This directory contains trained ML models
+# Place your model files here:
+# - failure_predictor_v1.pkl
+# - scaler_v1.pkl
+# - feature_names_v1.json
+# - model_metadata_v1.json

@@ -1,0 +1,181 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: drdo_postgres
+    environment:
+      POSTGRES_USER: drdo_user
+      POSTGRES_PASSWORD: drdo_password
+      POSTGRES_DB: drdo_maintenance
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drdo_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - drdo_network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: drdo_redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - drdo_network
+
+  # Service 1: Sensor Data Ingestion (Port 8001)
+  sensor-ingestion:
+    build:
+      context: ./sensor-data-ingestion-service
+      dockerfile: Dockerfile
+    container_name: drdo_sensor_ingestion
+    env_file:
+      - ./sensor-data-ingestion-service/.env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://drdo_user:drdo_password@postgres:5432/drdo_maintenance
+      - REDIS_URL=redis://redis:6379/0
+      - SERVICE_NAME=sensor-ingestion
+      - PORT=8001
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - drdo_network
+    restart: unless-stopped
+
+  # Service 2: ML Prediction (Port 8002)
+  ml-prediction:
+    build:
+      context: ./ml-prediction-service
+      dockerfile: Dockerfile
+    container_name: drdo_ml_prediction
+    env_file:
+      - ./ml-prediction-service/.env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://drdo_user:drdo_password@postgres:5432/drdo_maintenance
+      - REDIS_URL=redis://redis:6379/1
+      - SERVICE_NAME=ml-prediction
+      - PORT=8002
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./ml-prediction-service/models:/app/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - drdo_network
+    restart: unless-stopped
+
+  # Service 3: Alert & Maintenance (Port 8003)
+  alert-maintenance:
+    build:
+      context: ./alert-maintenance-service
+      dockerfile: Dockerfile
+    container_name: drdo_alert_maintenance
+    env_file:
+      - ./alert-maintenance-service/.env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://drdo_user:drdo_password@postgres:5432/drdo_maintenance
+      - REDIS_URL=redis://redis:6379/2
+      - SERVICE_NAME=alert-maintenance
+      - PORT=8003
+      - ML_PREDICTION_URL=http://ml-prediction:8002
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml-prediction:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - drdo_network
+    restart: unless-stopped
+
+  # Service 4: Dashboard (Port 8004)
+  dashboard:
+    build:
+      context: ./dashboard-service
+      dockerfile: Dockerfile
+    container_name: drdo_dashboard
+    env_file:
+      - ./dashboard-service/.env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://drdo_user:drdo_password@postgres:5432/drdo_maintenance
+      - REDIS_URL=redis://redis:6379/3
+      - SERVICE_NAME=dashboard
+      - PORT=8004
+      - SENSOR_INGESTION_URL=http://sensor-ingestion:8001
+      - ML_PREDICTION_URL=http://ml-prediction:8002
+      - ALERT_MAINTENANCE_URL=http://alert-maintenance:8003
+    ports:
+      - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      sensor-ingestion:
+        condition: service_healthy
+      ml-prediction:
+        condition: service_healthy
+      alert-maintenance:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - drdo_network
+    restart: unless-stopped
+
+networks:
+  drdo_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,837 @@
+ DRDO Equipment Maintenance Prediction System - Warp AI Terminal Rules
+
+## Project Context
+This is a production-ready microservices-based AI system for predictive maintenance of DRDO defense equipment. The system uses FastAPI, PostgreSQL, Redis, Scikit-learn, and Docker to implement a scalable ML inference pipeline following 12-factor app principles and Domain-Driven Design.
+
+---
+
+## 🎯 PROJECT ARCHITECTURE OVERVIEW
+
+**Architecture Type**: Microservices (4 independent services)
+**Programming Language**: Python 3.11+
+**Primary Frameworks**: FastAPI, Scikit-learn, SQLAlchemy, Streamlit
+**Infrastructure**: Docker, PostgreSQL, Redis, Kubernetes-ready
+**Design Patterns**: Domain-Driven Design, Dependency Injection, CQRS, Event-Driven
+
+**Services**:
+1. `sensor-ingestion-service` (Port 8001) - Data collection & validation
+2. `ml-prediction-service` (Port 8002) - ML inference & health scoring
+3. `alert-maintenance-service` (Port 8003) - Alert generation & scheduling
+4. `dashboard-service` (Port 8004) - Visualization & reporting
+
+---
+
+## 📋 CORE PRINCIPLES & STANDARDS
+
+### 1. 12-Factor App Compliance
+- **Codebase**: Single Git repo with clear service separation
+- **Dependencies**: Explicit `requirements.txt` per service, no system-wide packages
+- **Config**: ALL configuration via environment variables (`.env` files), NEVER hardcode
+- **Backing Services**: PostgreSQL and Redis as attached resources (connection strings in env vars)
+- **Build/Release/Run**: Strictly separate stages with Docker
+- **Processes**: Services MUST be stateless (state in DB/Redis only)
+- **Port Binding**: Each service exports via unique port (8001-8004)
+- **Concurrency**: Scale horizontally via process/container replication
+- **Disposability**: Fast startup (<10s), graceful shutdown with cleanup
+- **Dev/Prod Parity**: Same Docker images across all environments
+- **Logs**: JSON-structured logs to stdout (NEVER log files)
+- **Admin Processes**: Separate management scripts in `scripts/` directory
+
+### 2. Microservices Best Practices
+- **Service Independence**: Each service can deploy, scale, and fail independently
+- **Single Responsibility**: One service = one business domain
+- **Database per Service**: No shared databases between services
+- **API-First Design**: REST APIs with OpenAPI documentation
+- **Event-Driven Communication**: Use Redis pub/sub for async messaging
+- **Circuit Breaker Pattern**: Implement retries with exponential backoff
+- **Health Checks**: Every service MUST have `/health` and `/health/ready` endpoints
+- **Service Discovery**: Use environment-based URLs (no hardcoded IPs)
+- **Versioned APIs**: All endpoints under `/api/v1/` prefix
+
+### 3. Code Quality Standards
+- **Type Hints**: MANDATORY on all functions, methods, and class attributes
+- **Docstrings**: Google-style docstrings for all modules, classes, and functions
+- **Error Handling**: Try-except with specific exceptions, NEVER bare `except:`
+- **Logging**: Use Python `logging` module with structured JSON format
+- **Validation**: Pydantic models for ALL API requests/responses
+- **Testing**: Minimum 70% code coverage with pytest
+- **Code Formatting**: Black for formatting, isort for imports, flake8 for linting
+
+---
+
+## 🛠️ PYTHON CODING RULES
+
+### General Python Guidelines
+✅ ALWAYS USE
+Type hints: def function(param: str) -> dict[str, Any]:
+
+f-strings for string formatting: f"Equipment {equipment_id} status"
+
+Pydantic for data validation: class SensorReading(BaseModel):
+
+Async/await for I/O operations: async def ingest_sensor_data():
+
+Context managers: async with session.begin():
+
+List/dict comprehensions (when readable): [x for x in data if x.valid]
+
+❌ NEVER USE
+Global variables (except module-level constants in UPPER_CASE)
+
+import * statements
+
+Mutable default arguments: def func(data=[]): # WRONG
+
+String concatenation in loops (use join())
+
+print() statements (use logging instead)
+
+Raw SQL strings (use SQLAlchemy ORM or parameterized queries)
+
+text
+
+### FastAPI Patterns
+✅ CORRECT FASTAPI PATTERNS
+1. Dependency Injection
+from fastapi import Depends
+async def get_db() -> AsyncSession:
+async with AsyncSessionLocal() as session:
+yield session
+
+@app.post("/api/v1/sensors/ingest")
+async def ingest(reading: SensorReading, db: AsyncSession = Depends(get_db)):
+# Use injected dependencies
+pass
+
+2. Pydantic Models with Validation
+from pydantic import BaseModel, Field, validator
+
+class SensorReading(BaseModel):
+equipment_id: str = Field(..., min_length=3, description="Equipment ID")
+temperature: float = Field(..., ge=-50.0, le=200.0)
+
+text
+@validator('equipment_id')
+def validate_equipment_id(cls, v):
+    return v.upper()
+
+class Config:
+    json_schema_extra = {"example": {...}}
+3. Error Handling with Custom Exceptions
+from fastapi import HTTPException
+
+class SensorValidationError(Exception):
+pass
+
+@app.exception_handler(SensorValidationError)
+async def validation_exception_handler(request, exc):
+return JSONResponse(
+status_code=422,
+content={"error": str(exc), "timestamp": datetime.utcnow().isoformat()}
+)
+
+4. Lifespan Events for Startup/Shutdown
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+# Startup
+await init_db()
+logger.info("Database initialized")
+yield
+# Shutdown
+await engine.dispose()
+logger.info("Database connections closed")
+
+app = FastAPI(lifespan=lifespan)
+
+text
+
+### SQLAlchemy Async Patterns
+✅ CORRECT ASYNC DATABASE PATTERNS
+1. Async Session Creation
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+
+engine = create_async_engine(
+DATABASE_URL,
+pool_size=10,
+max_overflow=20,
+pool_pre_ping=True, # Verify connections
+pool_recycle=3600 # Recycle after 1 hour
+)
+
+AsyncSessionLocal = async_sessionmaker(
+engine,
+class_=AsyncSession,
+expire_on_commit=False
+)
+
+2. Query Patterns
+from sqlalchemy import select
+
+async def get_latest_readings(equipment_id: str) -> list[SensorDataDB]:
+async with AsyncSessionLocal() as session:
+stmt = select(SensorDataDB).where(
+SensorDataDB.equipment_id == equipment_id
+).order_by(SensorDataDB.timestamp.desc()).limit(10)
+
+text
+    result = await session.execute(stmt)
+    return result.scalars().all()
+3. Transaction Management
+async def save_sensor_data(reading: SensorReading):
+async with AsyncSessionLocal() as session:
+try:
+db_reading = SensorDataDB(**reading.dict())
+session.add(db_reading)
+await session.commit()
+await session.refresh(db_reading)
+return db_reading
+except Exception as e:
+await session.rollback()
+logger.error(f"Database error: {e}")
+raise
+
+text
+
+### Logging Standards
+✅ CORRECT LOGGING PATTERNS
+import logging
+import json
+from datetime import datetime
+
+1. Structured JSON Logging
+class JSONFormatter(logging.Formatter):
+def format(self, record):
+log_data = {
+"timestamp": datetime.utcnow().isoformat(),
+"level": record.levelname,
+"service": "sensor-ingestion",
+"message": record.getMessage(),
+"module": record.module,
+"function": record.funcName,
+}
+if record.exc_info:
+log_data["exception"] = self.formatException(record.exc_info)
+return json.dumps(log_data)
+
+2. Logger Configuration
+logger = logging.getLogger(name)
+handler = logging.StreamHandler()
+handler.setFormatter(JSONFormatter())
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+3. Usage Patterns
+logger.info(f"Sensor data received: {equipment_id}")
+logger.warning(f"High temperature detected: {temperature}°C")
+logger.error(f"Database connection failed: {error}", exc_info=True)
+
+❌ NEVER USE print() IN PRODUCTION CODE
+text
+
+---
+
+## 🐳 DOCKER & DEPLOYMENT RULES
+
+### Dockerfile Best Practices
+✅ CORRECT DOCKERFILE PATTERN
+Multi-stage build for smaller images
+FROM python:3.11-slim as builder
+
+WORKDIR /app
+
+Install dependencies first (layer caching)
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+Final stage
+FROM python:3.11-slim
+
+Create non-root user for security
+RUN useradd -m -u 1000 appuser
+
+WORKDIR /app
+
+Copy dependencies from builder
+COPY --from=builder /root/.local /home/appuser/.local
+
+Copy application code
+COPY --chown=appuser:appuser app/ ./app/
+
+Switch to non-root user
+USER appuser
+
+Set Python path
+ENV PATH=/home/appuser/.local/bin:$PATH
+
+Expose port
+EXPOSE 8001
+
+Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3
+CMD curl -f http://localhost:8001/health || exit 1
+
+Use exec form for proper signal handling
+ENTRYPOINT ["python", "-m", "uvicorn", "app.main:app"]
+CMD ["--host", "0.0.0.0", "--port", "8001", "--workers", "4"]
+
+text
+
+### Environment Variables Configuration
+✅ CORRECT CONFIG PATTERN (config.py)
+from pydantic_settings import BaseSettings
+from typing import Optional
+
+class Settings(BaseSettings):
+# Service Config
+SERVICE_NAME: str = "sensor-ingestion"
+PORT: int = 8001
+
+text
+# Database (REQUIRED)
+DATABASE_URL: str  # No default - MUST be set
+
+# Redis (REQUIRED)
+REDIS_URL: str
+
+# Optional with defaults
+LOG_LEVEL: str = "INFO"
+DEBUG: bool = False
+
+# Validation constraints
+MIN_TEMPERATURE: float = -50.0
+MAX_TEMPERATURE: float = 200.0
+
+class Config:
+    env_file = ".env"
+    env_file_encoding = "utf-8"
+    case_sensitive = True
+settings = Settings()
+
+❌ NEVER HARDCODE
+DATABASE_URL = "postgresql://localhost:5432/db" # WRONG!
+text
+
+---
+
+## 🧪 TESTING REQUIREMENTS
+
+### Test Structure
+✅ CORRECT TEST PATTERNS (test_main.py)
+import pytest
+from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock, patch
+
+@pytest.fixture
+def client():
+from app.main import app
+return TestClient(app)
+
+@pytest.fixture
+def mock_db_session():
+"""Mock database session"""
+session = AsyncMock()
+return session
+
+@pytest.mark.asyncio
+async def test_ingest_sensor_data_success(client, mock_db_session):
+"""Test successful sensor data ingestion"""
+# Arrange
+test_data = {
+"equipment_id": "RADAR-001",
+"temperature": 85.5,
+"vibration": 0.45,
+"pressure": 3.2
+}
+
+text
+# Act
+response = client.post("/api/v1/sensors/ingest", json=test_data)
+
+# Assert
+assert response.status_code == 200
+assert response.json()["status"] == "received"
+assert "reading_id" in response.json()
+@pytest.mark.asyncio
+async def test_ingest_sensor_data_invalid_temperature(client):
+"""Test validation error for invalid temperature"""
+test_data = {
+"equipment_id": "RADAR-001",
+"temperature": 999.0, # Invalid
+"vibration": 0.45,
+"pressure": 3.2
+}
+
+text
+response = client.post("/api/v1/sensors/ingest", json=test_data)
+
+assert response.status_code == 422
+assert "temperature" in response.json()["detail"]["loc"]
+text
+
+### Testing Commands
+Run all tests with coverage
+pytest tests/ --cov=app --cov-report=html --cov-report=term
+
+Run specific test file
+pytest tests/test_main.py -v
+
+Run with markers
+pytest tests/ -m "integration" -v
+
+Run failed tests only
+pytest tests/ --lf
+
+text
+
+---
+
+## 📊 ML MODEL GUIDELINES
+
+### Model Training Standards
+✅ CORRECT ML TRAINING PATTERN
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split, cross_val_score
+import joblib
+import json
+
+def train_failure_prediction_model(data: pd.DataFrame):
+"""
+Train Random Forest model for equipment failure prediction.
+
+text
+Args:
+    data: DataFrame with features and target column 'failure_label'
+
+Returns:
+    Dict with trained model and metrics
+"""
+# Features and target
+X = data[['temperature', 'vibration', 'pressure', 'humidity', 'voltage']]
+y = data['failure_label']
+
+# Train-test split with stratification
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+# Train model
+model = RandomForestClassifier(
+    n_estimators=100,
+    max_depth=10,
+    class_weight='balanced',  # Handle imbalanced data
+    random_state=42,
+    n_jobs=-1
+)
+model.fit(X_train, y_train)
+
+# Cross-validation
+cv_scores = cross_val_score(model, X_train, y_train, cv=5)
+
+# Evaluate on test set
+test_accuracy = model.score(X_test, y_test)
+
+# Save model
+joblib.dump(model, 'models/failure_predictor_v1.pkl')
+
+# Save metadata
+metadata = {
+    "model_type": "RandomForestClassifier",
+    "version": "1.0",
+    "accuracy": float(test_accuracy),
+    "cv_mean_accuracy": float(cv_scores.mean()),
+    "cv_std": float(cv_scores.std()),
+    "training_samples": len(X_train),
+    "test_samples": len(X_test),
+    "features": X.columns.tolist(),
+    "random_seed": 42
+}
+
+with open('models/model_metadata_v1.json', 'w') as f:
+    json.dump(metadata, f, indent=2)
+
+logger.info(f"Model trained: Accuracy={test_accuracy:.3f}")
+
+return {"model": model, "metadata": metadata}
+text
+
+### Model Inference Standards
+✅ CORRECT INFERENCE PATTERN
+import joblib
+import numpy as np
+
+class ModelInferenceService:
+def init(self, model_path: str):
+self.model = joblib.load(model_path)
+self.feature_names = self._load_feature_names()
+
+text
+def predict_failure(self, sensor_data: dict) -> dict:
+    """
+    Predict equipment failure probability.
+    
+    Args:
+        sensor_data: Dict with sensor readings
+    
+    Returns:
+        Dict with prediction results
+    """
+    try:
+        # Prepare features in correct order
+        features = np.array([[
+            sensor_data['temperature'],
+            sensor_data['vibration'],
+            sensor_data['pressure'],
+            sensor_data.get('humidity', 0.0),
+            sensor_data.get('voltage', 0.0)
+        ]])
+        
+        # Predict probability
+        failure_prob = self.model.predict_proba(features)[6]
+        
+        # Calculate severity
+        if failure_prob > 0.8:
+            severity = "CRITICAL"
+            days_until_failure = 7
+        elif failure_prob > 0.6:
+            severity = "HIGH"
+            days_until_failure = 15
+        elif failure_prob > 0.4:
+            severity = "MEDIUM"
+            days_until_failure = 30
+        else:
+            severity = "LOW"
+            days_until_failure = 60
+        
+        return {
+            "failure_probability": round(float(failure_prob), 3),
+            "severity": severity,
+            "days_until_failure": days_until_failure,
+            "confidence": "high" if failure_prob > 0.7 or failure_prob < 0.3 else "medium"
+        }
+        
+    except Exception as e:
+        logger.error(f"Prediction error: {e}", exc_info=True)
+        raise
+text
+
+---
+
+## 📝 DOCUMENTATION STANDARDS
+
+### Docstring Format (Google Style)
+def calculate_equipment_health_score(
+temperature: float,
+vibration: float,
+pressure: float,
+historical_data: Optional[list[dict]] = None
+) -> float:
+"""
+Calculate normalized health score for equipment based on sensor readings.
+
+text
+The health score is a value between 0-100 where:
+- 90-100: Excellent condition
+- 70-89: Good condition
+- 50-69: Fair condition (monitoring recommended)
+- 30-49: Poor condition (maintenance needed)
+- 0-29: Critical condition (immediate action required)
+
+Args:
+    temperature: Current temperature reading in Celsius (-50 to 200)
+    vibration: Current vibration level in mm/s (0 to 2.0)
+    pressure: Current pressure reading in bar (0 to 10.0)
+    historical_data: Optional list of past 24-hour readings for trend analysis
+
+Returns:
+    Health score as float between 0.0 and 100.0
+
+Raises:
+    ValueError: If sensor readings are outside valid ranges
+    
+Example:
+    >>> calculate_equipment_health_score(85.5, 0.45, 3.2)
+    73.5
+"""
+# Implementation
+pass
+text
+
+### README.md Structure for Each Service
+Service Name
+Brief description of service purpose and responsibilities.
+
+Endpoints
+POST /api/v1/sensors/ingest
+Ingest sensor data from equipment.
+
+Request Body:
+
+json
+{
+  "equipment_id": "RADAR-001",
+  "temperature": 85.5,
+  "vibration": 0.45,
+  "pressure": 3.2
+}
+Response:
+
+json
+{
+  "reading_id": "uuid",
+  "status": "received"
+}
+Environment Variables
+Variable	Required	Default	Description
+DATABASE_URL	Yes	-	PostgreSQL connection string
+REDIS_URL	Yes	-	Redis connection string
+PORT	No	8001	Service port
+Local Development
+bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run service
+uvicorn app.main:app --reload --port 8001
+
+# Run tests
+pytest tests/ --cov
+text
+
+---
+
+## 🔍 DEBUGGING & TROUBLESHOOTING
+
+### Logging Best Practices
+✅ CORRECT LOGGING FOR DEBUGGING
+import logging
+from functools import wraps
+
+def log_execution_time(func):
+"""Decorator to log function execution time"""
+@wraps(func)
+async def wrapper(*args, **kwargs):
+import time
+start = time.time()
+result = await func(*args, **kwargs)
+duration = time.time() - start
+logger.info(f"{func.name} executed in {duration:.3f}s")
+return result
+return wrapper
+
+@log_execution_time
+async def ingest_sensor_data(reading: SensorReading):
+logger.info(f"Processing reading for equipment: {reading.equipment_id}")
+# Implementation
+pass
+
+text
+
+### Common Error Patterns to Avoid
+❌ BAD: Bare except
+try:
+result = await db.execute(query)
+except: # NEVER DO THIS
+pass
+
+✅ GOOD: Specific exceptions
+try:
+result = await db.execute(query)
+except SQLAlchemyError as e:
+logger.error(f"Database error: {e}", exc_info=True)
+raise HTTPException(status_code=500, detail="Database error")
+except Exception as e:
+logger.error(f"Unexpected error: {e}", exc_info=True)
+raise
+
+❌ BAD: Swallowing errors
+def process_data(data):
+try:
+return transform(data)
+except Exception:
+return None # Data loss!
+
+✅ GOOD: Proper error handling
+def process_data(data):
+try:
+return transform(data)
+except ValueError as e:
+logger.warning(f"Invalid data: {e}, using default")
+return get_default_value()
+except Exception as e:
+logger.error(f"Processing failed: {e}", exc_info=True)
+raise
+
+text
+
+---
+
+## 🚦 CI/CD & DEPLOYMENT
+
+### Pre-commit Checks
+Run before every commit
+black app/ tests/ # Format code
+isort app/ tests/ # Sort imports
+flake8 app/ tests/ # Lint
+mypy app/ # Type check
+pytest tests/ --cov # Run tests
+
+text
+
+### Docker Compose Commands
+Start all services
+docker-compose up -d
+
+View logs
+docker-compose logs -f sensor-ingestion
+
+Restart specific service
+docker-compose restart ml-prediction
+
+Stop all services
+docker-compose down
+
+Rebuild and start
+docker-compose up -d --build
+
+text
+
+---
+
+## 📌 PROJECT-SPECIFIC RULES
+
+### Equipment ID Validation
+Equipment IDs MUST follow pattern: TYPE-LOCATION-NUMBER
+Valid: RADAR-LOC-001, AIRCRAFT-BASE-042, NAVAL-PORT-003
+Invalid: radar001, RADAR_001, R-1
+def validate_equipment_id(equipment_id: str) -> bool:
+import re
+pattern = r'^[A-Z]+-[A-Z0-9]+-\d{3}$'
+return bool(re.match(pattern, equipment_id))
+
+text
+
+### Sensor Value Constraints
+DRDO-specific sensor ranges
+SENSOR_CONSTRAINTS = {
+"temperature": {"min": -50.0, "max": 200.0, "unit": "°C"},
+"vibration": {"min": 0.0, "max": 2.0, "unit": "mm/s"},
+"pressure": {"min": 0.0, "max": 10.0, "unit": "bar"},
+"humidity": {"min": 0.0, "max": 100.0, "unit": "%"},
+"voltage": {"min": 0.0, "max": 500.0, "unit": "V"}
+}
+
+text
+
+### Failure Severity Thresholds
+Severity classification based on failure probability
+SEVERITY_THRESHOLDS = {
+"CRITICAL": 0.8, # >80% failure probability
+"HIGH": 0.6, # 60-80%
+"MEDIUM": 0.4, # 40-60%
+"LOW": 0.0 # <40%
+}
+
+text
+
+---
+
+## 🎓 LEARNING RESOURCES
+
+### When You Get Stuck
+1. **FastAPI Docs**: https://fastapi.tiangolo.com/
+2. **SQLAlchemy Async**: https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html
+3. **Pydantic V2**: https://docs.pydantic.dev/latest/
+4. **Scikit-learn**: https://scikit-learn.org/stable/
+5. **12-Factor App**: https://12factor.net/
+
+### Common Commands Reference
+Create virtual environment
+python -m venv venv
+source venv/bin/activate # Linux/Mac
+venv\Scripts\activate # Windows
+
+Install dependencies
+pip install -r requirements.txt
+
+Run service locally
+uvicorn app.main:app --reload --port 8001
+
+Run tests
+pytest tests/ -v --cov=app
+
+Format code
+black app/ tests/
+isort app/ tests/
+
+Type check
+mypy app/
+
+Docker build
+docker build -t sensor-ingestion:latest .
+
+Docker run
+docker run -p 8001:8001 --env-file .env sensor-ingestion:latest
+
+text
+
+---
+
+## ⚠️ CRITICAL REMINDERS
+
+### ALWAYS
+- ✅ Use type hints
+- ✅ Add docstrings
+- ✅ Handle errors explicitly
+- ✅ Log important events
+- ✅ Validate inputs with Pydantic
+- ✅ Use environment variables for config
+- ✅ Write tests for new code
+- ✅ Use async/await for I/O
+- ✅ Follow 12-factor app principles
+- ✅ Keep services independent
+
+### NEVER
+- ❌ Hardcode credentials or URLs
+- ❌ Use `print()` in production code
+- ❌ Share database connections between services
+- ❌ Use bare `except:` clauses
+- ❌ Ignore type hints
+- ❌ Skip error handling
+- ❌ Commit `.env` files
+- ❌ Use global mutable state
+- ❌ Mix sync and async code incorrectly
+- ❌ Create circular dependencies between services
+
+---
+
+## 📧 PROJECT METADATA
+
+**Project Name**: DRDO Equipment Maintenance Prediction System
+**Tech Stack**: Python 3.11, FastAPI, PostgreSQL, Redis, Scikit-learn, Docker
+**Architecture**: Microservices with Domain-Driven Design
+**Purpose**: DRDO summer training project on ML-powered predictive maintenance
+**Target**: 85%+ prediction accuracy, <200ms response time, 99.5% availability
+
+---
+
+Last Updated: 2025-11-02
+Version: 1.0
+Author: [Your Name]
+ Warp AI will automatically follow your rules:
+
+# Prompt 1: Generate a service
+"Create the sensor ingestion FastAPI service following project rules"
+
+# Prompt 2: Debug an issue
+"Why is my async database session not working? Check against project standards"
+
+# Prompt 3: Generate tests
+"Write pytest tests for the ML prediction service endpoint"
+
+# Prompt 4: Docker command
+"Build and run the ml-prediction service container"
+
+# Prompt 5: Generate model training code
+"Create the Random Forest training script following ML guidelines"
